@@ -1,0 +1,17 @@
+version: "1.0"
+services:
+  storage1:
+    build: .
+    ports:
+      - "8081:8080"
+    image: "storage"
+  storage2:
+    build: .
+    ports:
+      - "8082:8080"
+    image: "storage"
+  storage3:
+    build: .
+    ports:
+      - "8083:8080"
+    image: "storage"
