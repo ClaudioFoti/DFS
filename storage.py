@@ -1,4 +1,5 @@
 from flask import Flask, request
+from pathlib import Path
 import os
 import sqlite3
 
@@ -22,7 +23,6 @@ def upload_file():
             uuid = request.form["uuid"]
             filepath = os.path.join(app.config['UPLOAD_FOLDER'], filename)
 
-
             with open(filepath,'w') as file:
                 file.write(content)
 
@@ -41,7 +41,18 @@ def get_current_storage_size():
 
     size = cursor.fetchone()[0]
 
-    return str(size), 200
+    if not (size is None):
+        return str(size), 200
+    else:
+        return str(0), 200
+
+@app.route("/files/<filename>")
+def get_file(filename):
+    filepath = os.path.join(app.config['UPLOAD_FOLDER'], filename)
+    if os.path.isfile(filepath):
+        return Path(filepath).read_text()
+    else:
+        return ""
 
 def save_file_db(uuid,filename,location,content,size):
     cur = db.cursor()

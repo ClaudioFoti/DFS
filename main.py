@@ -1,3 +1,4 @@
+from urllib import response
 from flask import Flask,request
 from pathlib import Path
 import requests
@@ -14,23 +15,44 @@ db = sqlite3.connect('main.db', check_same_thread=False)
 
 @app.route("/")
 def index():
-    return str(shard_file())
+    html_list = ""
+    for file in get_files():
+        filename = file["filename"]
+        file_uuid = file["uuid"]
+        html_list += "<li><a href=\"/read_file/"+file_uuid+"\">"+filename+"</a></li>"
+    
+    return '''
+    <!doctype html>
+    <title>All files</title>
+    <h1>All files</h1>
+    <ul>'''+html_list+"</ul>"+'''
+    <br>
+    <a href=\"/create_file\">Upload a file</a>
+    '''
+
+@app.route('/read_file/<file_uuid>')
+def read_file(file_uuid):
+    content = get_file_content(get_file_locations(file_uuid))
+    
+    return '''
+    <!doctype html>
+    <title>File #'''+file_uuid+'''</title>
+    <h1>File #'''+file_uuid+'''</h1>
+    <p><label for="content">File content:</label></p>
+    <textarea id="content" name="content" rows="20" cols="100">'''+content+"</textarea>"+'''
+    <br>
+    <a href=\"/\">Go to file list</a>
+    '''
 
 @app.route('/create_file', methods=['GET', 'POST'])
 def upload_file():
     response = ""
-    status_code = 500
     if request.method == 'POST':
         if 'file' not in request.files:
             response += "No file part"
         else:
             file = request.files['file']
-            status_code = upload_file(file)
-
-        if status_code == 200:
-            response += "File successfully created"
-
-
+            response += upload_file(file)
 
     return '''
     <!doctype html>
@@ -40,7 +62,10 @@ def upload_file():
       <input type=file name=file>
       <input type=submit value=Upload>
     </form>
-    '''+response
+    '''+response+'''
+    <br>
+    <a href=\"/\">Go to file list</a>
+    '''
 
 def allowed_file(filename):
     allowed_extensions = ['txt']
@@ -61,13 +86,11 @@ def upload_file(file):
 
         file_uuid = uuid.uuid4()
 
-        request = requests.post("http://127.0.0.1:8081/upload_file", data={'filename': filename, 'content': content, 'uuid': file_uuid})
-
-        return request.status_code
+        return shard_file(file_uuid, filename, filepath, content)
         
     return "File couldn't be uploaded"
 
-def shard_file():
+def get_servers_storage():
     sizes = []
     
     server_pool = SERVER_POOL
@@ -80,16 +103,106 @@ def shard_file():
         except:
             status_code = 503
         if status_code == 200:
-            sizes.append(("http://"+server[0]+":"+str(server[1]),int(response.text)))
+            sizes.append({"address": "http://"+server[0]+":"+str(server[1]),"size": int(response.text)})
     
-    return sizes
+    sorted_sizes = sorted(sizes, key=lambda d: d['size'])
 
-def save_file_db(uuid,locations):
+    return sorted_sizes
+
+def shard_file(file_uuid, filename, filepath, content):
+    response = ""
+
+    file_size_limit = 1000
+    
+    servers_storage = get_servers_storage()
+
+    i = 0
+    bytes = None
+    with open(filepath, "r", encoding="utf8") as in_file:
+        bytes = in_file.read(file_size_limit)
+        while bytes:
+            with open(os.path.join(app.config['UPLOAD_FOLDER'], (str(file_uuid) + "_" + str(i))), 'w', encoding="utf8") as output:
+                output.write(bytes)
+            bytes = in_file.read(file_size_limit)
+            i += 1
+
+    if i == 1:
+        new_file_name = (str(file_uuid) + "_" + str(0))
+        store_file(servers_storage[0]["address"],file_uuid, filename,new_file_name, filepath, content)
+
+        response += "File successfully uploaded"
+
+        os.remove(os.path.join(app.config['UPLOAD_FOLDER'], (str(file_uuid) + "_" + str(0))))
+    else:
+        for shard in range(i):
+            new_file_name = (str(file_uuid) + "_" + str(shard))
+            new_file_path = os.path.join(app.config['UPLOAD_FOLDER'], new_file_name)
+
+            content = Path(new_file_path).read_text()
+
+            servers_storage[0]["size"] += os.path.getsize(new_file_path)
+
+            store_file(servers_storage[0]["address"],file_uuid, filename,new_file_name,new_file_path,content)
+            
+            servers_storage = sorted(servers_storage, key=lambda d: d['size'])
+
+        response += "File successfully sharded"
+
+        os.remove(filepath)
+
+
+    return response
+
+def store_file(address, file_uuid, original_filename, filename, filepath, content):
+    requests.post(address+"/upload_file", data={'filename': filename, 'content': content, 'uuid': file_uuid})
+
+    save_file_db(file_uuid,original_filename,address+"/files/"+filename)
+    
+    os.remove(filepath)
+
+def save_file_db(file_uuid, filename,location):
     cur = db.cursor()
 
-    cur.execute("INSERT INTO files (uuid,locations) VALUES ('"+uuid+"','"+locations+"'")
+    cur.execute("INSERT INTO files (filename,uuid,location) VALUES ('"+filename+"','"+str(file_uuid)+"','"+location+"')")
 
     db.commit()
+
+def get_files():
+    files = []
+
+    cursor = db.cursor()
+
+    file_id = -1
+    for row in cursor.execute('SELECT * FROM files ORDER BY id'):
+        if not any(d['uuid'] == row[2] for d in files):
+            files.append({"filename": row[1], "uuid": row[2],"locations": [row[3]]})
+            file_id += 1
+        else:
+            files[file_id]["locations"].append(row[3])
+
+    return files
+
+def get_file_locations(file_uuid):
+    locations = []
+
+    cursor = db.cursor()
+
+    for row in cursor.execute('SELECT location FROM files WHERE uuid = "' + file_uuid + '";'):
+        locations.append(row[0])
+
+    return locations
+
+def get_file_content(locations):
+    content = ""
+
+    for location in locations:
+        response = requests.get(location)
+        if response.status_code == 200:
+            content += response.text
+
+    
+
+    return content
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=8080, debug=True)
