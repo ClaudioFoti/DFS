@@ -1,6 +1,7 @@
 from flask import Flask, request
 from pathlib import Path
 import os
+import glob
 import sqlite3
 
 app = Flask(__name__)
@@ -53,6 +54,20 @@ def get_file(filename):
         return Path(filepath).read_text()
     else:
         return ""
+
+@app.route("/delete/<file_uuid>")
+def delete(file_uuid):
+    cur = db.cursor()
+
+    cur.execute('DELETE FROM files WHERE uuid = "'+file_uuid+'";')
+
+    db.commit()
+
+    for file in glob.glob(os.path.join(app.config['UPLOAD_FOLDER'], file_uuid) + "*"):
+        print(file)
+        os.remove(file)
+
+    return "Deleted", 200
 
 def save_file_db(uuid,filename,location,content,size):
     cur = db.cursor()

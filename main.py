@@ -1,5 +1,4 @@
-from urllib import response
-from flask import Flask,request
+from flask import Flask,request,redirect
 from pathlib import Path
 import requests
 import os
@@ -38,8 +37,15 @@ def read_file(file_uuid):
     <!doctype html>
     <title>File #'''+file_uuid+'''</title>
     <h1>File #'''+file_uuid+'''</h1>
-    <p><label for="content">File content:</label></p>
-    <textarea id="content" name="content" rows="20" cols="100">'''+content+"</textarea>"+'''
+    <form method=post action="/edit_file">
+        <p><label for="content">File content:</label></p>
+        <input name="file_uuid" type="hidden" value='''+file_uuid+'''></input>
+        <textarea id="content" name="content" rows="20" cols="100">'''+content+"</textarea>"+'''
+        <br>
+        <input type=submit value=Edit>
+    </form>
+    <br>
+    <a href=\"/delete/'''+file_uuid+'''\">Delete file</a>
     <br>
     <a href=\"/\">Go to file list</a>
     '''
@@ -66,6 +72,50 @@ def upload_file():
     <br>
     <a href=\"/\">Go to file list</a>
     '''
+
+@app.route('/delete/<file_uuid>')
+def delete(file_uuid):
+    for location in get_file_locations(file_uuid):
+        requests.get("http://"+location.split('/')[2]+"/delete/"+file_uuid)
+    
+    cur = db.cursor()
+
+    cur.execute('DELETE FROM files WHERE uuid = "'+file_uuid+'";')
+
+    db.commit()
+
+    response = "File successfully deleted"
+    return '''
+    <!doctype html>
+    <title>Delete file</title>
+    <h1>Delete file</h1>
+    '''+response+'''
+    <br>
+    <a href=\"/\">Go to file list</a>
+    '''
+
+@app.route('/edit_file', methods=['POST'])
+def edit_file():
+    response = ""
+    if request.method == 'POST':
+        if 'content' not in request.form:
+            response += "No content submitted"
+        else:
+            file_uuid = request.form['file_uuid']
+            content = request.form['content']
+            filename = get_file_name(file_uuid)
+            filepath = os.path.join(app.config['UPLOAD_FOLDER'], filename)
+            
+            delete(file_uuid)
+
+            with open(filepath,'w') as file:
+                file.write(content)
+
+            response += shard_file(file_uuid,filename,filepath,content)
+
+            return redirect("/", code=302)
+    return response
+
 
 def allowed_file(filename):
     allowed_extensions = ['txt']
@@ -192,6 +242,15 @@ def get_file_locations(file_uuid):
 
     return locations
 
+def get_file_name(file_uuid):
+    cursor = db.cursor()
+
+    cursor.execute('SELECT filename FROM files WHERE uuid = "' + file_uuid + '" LIMIT 1;')
+
+    filename = cursor.fetchone()[0]
+
+    return filename
+
 def get_file_content(locations):
     content = ""
 
@@ -199,8 +258,6 @@ def get_file_content(locations):
         response = requests.get(location)
         if response.status_code == 200:
             content += response.text
-
-    
 
     return content
 
